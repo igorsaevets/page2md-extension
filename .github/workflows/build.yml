@@ -1,0 +1,46 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  group: build-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+
+jobs:
+  build-chrome:
+    name: Zip Chrome MV3 artifact
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v5
+
+      - name: Setup Node.js 24 LTS
+        uses: actions/setup-node@v5
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Type-check
+        run: npm run compile
+
+      - name: Zip Chrome extension
+        run: npx wxt zip -b chrome
+
+      - name: Upload Chrome zip
+        uses: actions/upload-artifact@v4
+        with:
+          name: page2md-chrome-${{ github.sha }}
+          path: .output/*-chrome.zip
+          if-no-files-found: error
+          retention-days: 30
