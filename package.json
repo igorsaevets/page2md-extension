@@ -2,7 +2,7 @@
   "name": "page2md-extension",
   "description": "Convert any webpage to clean, AI-ready Markdown. Chrome extension. 100% local, open source.",
   "private": true,
-  "version": "1.0.0",
+  "version": "1.0.2",
   "type": "module",
   "author": "Igor Saevets, AI Expert and Entrepreneur",
   "license": "MIT",
@@ -14,7 +14,15 @@
   "bugs": {
     "url": "https://github.com/igorsaevets/page2md-extension/issues"
   },
-  "keywords": ["chrome-extension", "markdown", "webpage-to-markdown", "ai", "llm", "wxt", "manifest-v3"],
+  "keywords": [
+    "chrome-extension",
+    "markdown",
+    "webpage-to-markdown",
+    "ai",
+    "llm",
+    "wxt",
+    "manifest-v3"
+  ],
   "scripts": {
     "dev": "wxt",
     "dev:firefox": "wxt -b firefox",
@@ -23,9 +31,11 @@
     "zip": "wxt zip",
     "zip:firefox": "wxt zip -b firefox",
     "compile": "tsc --noEmit",
+    "icons": "node scripts/gen-icons.mjs",
     "postinstall": "wxt prepare"
   },
   "devDependencies": {
+    "sharp": "^0.35.3",
     "typescript": "^5.9.3",
     "wxt": "^0.20.27"
   }

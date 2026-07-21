@@ -6,6 +6,30 @@ import type { ClassifiedLink, ResolvedConfig } from '../types';
 
 export const sleep = (ms: number): Promise<void> => new Promise((r) => setTimeout(r, ms));
 
+// Race a Promise against a hard wall-clock timeout. On timeout resolves to
+// `onTimeout` (default null) — never rejects, so callers can treat "no capture"
+// and "timed out" uniformly. Does NOT abort the racing work: if `p` is a slow
+// synchronous computation (e.g. renderNode on a big DOM), it keeps running to
+// completion in the background but its result is discarded. Guards only real
+// async waits (network fetches, MutationObserver settles inside clickAndWait).
+export const withHardTimeout = <T>(
+  p: Promise<T>,
+  ms: number,
+  onTimeout: T | null = null,
+): Promise<T | null> => {
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  const timeout = new Promise<T | null>((resolve) => {
+    timer = setTimeout(() => resolve(onTimeout), ms);
+  });
+  return Promise.race([
+    p.then((v) => {
+      if (timer) clearTimeout(timer);
+      return v;
+    }),
+    timeout,
+  ]);
+};
+
 export const slugify = (t: string | null | undefined): string =>
   (t || 'page')
     .toLowerCase()

@@ -24,5 +24,9 @@ export default defineConfig({
     // The e2e build grants localhost host access so the smoke test can call
     // scripting.executeScript without the activeTab user gesture. Never ships.
     ...(mode === 'e2e' ? { host_permissions: ['http://127.0.0.1/*'] } : {}),
+    // real-test drives extraction against real public sites (docs, blogs, gov).
+    // Broad host access is required because there is no user gesture in the
+    // headless runner. Never ships — produces its own .output/chrome-mv3-real-test.
+    ...(mode === 'real-test' ? { host_permissions: ['<all_urls>'] } : {}),
   }),
 });

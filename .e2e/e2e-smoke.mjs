@@ -28,7 +28,27 @@ const CHROME_CANDIDATES = [
 const TEST_HTML = `<!doctype html>
 <html lang="en">
 <head><meta charset="utf-8"><title>Page2MD Test Fixture — Getting Started</title>
-<meta name="description" content="Fixture page for the Page2MD e2e smoke test."></head>
+<meta name="description" content="Fixture page for the Page2MD e2e smoke test.">
+<meta name="author" content="Igor Saevets">
+<meta name="keywords" content="markdown, chrome-extension, RAG">
+<meta property="og:title" content="Page2MD Test Fixture — OG Title Override">
+<meta property="og:description" content="OG description differs from meta name=description.">
+<meta property="og:image" content="https://example.com/og.png">
+<meta property="og:type" content="article">
+<meta property="og:site_name" content="Page2MD Docs">
+<meta property="og:locale" content="en_US">
+<meta property="article:published_time" content="2026-01-15T09:00:00Z">
+<meta property="article:modified_time" content="2026-06-30T12:00:00Z">
+<meta property="article:author" content="Igor Saevets">
+<meta property="article:section" content="Documentation">
+<meta property="article:tag" content="page2md">
+<meta property="article:tag" content="markdown">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:image" content="https://example.com/twitter.png">
+<script type="application/ld+json">
+{"@context":"https://schema.org","@type":"Article","headline":"Getting Started","author":{"@type":"Person","name":"Jane Doe"},"datePublished":"2026-01-15T09:00:00Z"}
+</script>
+</head>
 <body>
 <main>
   <h1>Getting Started</h1>
@@ -180,6 +200,20 @@ try {
   check('profile detected as docs (/docs/ path)', result.profile === 'docs', `profile=${result.profile}`);
   check('cached url matches', cached.url === pageUrl, cached.url);
   check('frontmatter has source', md.includes(`source: "${pageUrl}"`));
+  check('frontmatter has og_title (differs from plain title)', md.includes('og_title: "Page2MD Test Fixture — OG Title Override"'));
+  check('frontmatter has og_description', md.includes('og_description: "OG description differs from meta name=description."'));
+  check('frontmatter has og_image', md.includes('og_image: "https://example.com/og.png"'));
+  check('frontmatter has og_type', md.includes('og_type: "article"'));
+  check('frontmatter has og_site_name', md.includes('og_site_name: "Page2MD Docs"'));
+  check('frontmatter has og_locale', md.includes('og_locale: "en_US"'));
+  check('frontmatter has twitter_card', md.includes('twitter_card: "summary_large_image"'));
+  check('frontmatter has twitter_image (differs from og_image)', md.includes('twitter_image: "https://example.com/twitter.png"'));
+  check('frontmatter has published date', md.includes('published: "2026-01-15T09:00:00Z"'));
+  check('frontmatter has modified date', md.includes('modified: "2026-06-30T12:00:00Z"'));
+  check('frontmatter has author (article:author preferred)', md.includes('author: "Igor Saevets"'));
+  check('frontmatter has section', md.includes('section: "Documentation"'));
+  check('frontmatter has keywords', md.includes('keywords: "markdown, chrome-extension, RAG"'));
+  check('frontmatter has tags as YAML flow-sequence', md.includes('tags: ["page2md", "markdown"]'));
   check('h1 rendered', md.includes('# Getting Started'));
   check('code fence rendered', md.includes('```'));
   check('table rendered', /\|\s*Option\s*\|/.test(md));

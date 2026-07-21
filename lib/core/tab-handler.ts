@@ -2,7 +2,7 @@
 // content-delta fallbacks, URL drift protection.
 // Ported from Rev-032v2 prototype (Sections 26, 33-34 + URL drift from 24).
 
-import { cleanBlock, cleanInline, sleep } from './utils';
+import { cleanBlock, cleanInline, sleep, withHardTimeout } from './utils';
 import {
   clickAndWait,
   getButtonFallbackLabel,
@@ -493,18 +493,42 @@ export const annotateDropdownButtons = (ctx: ExtractContext, bs: HTMLElement[]):
     }
   });
 
+// Returns true when the tab phase has exceeded its cumulative wall-clock budget.
+// Tab pages with many groups × many buttons can burn dozens of seconds in
+// aggregate even though every individual click is bounded to ~780 ms by
+// waitForDomToSettle. Once the budget is hit we set state.tabCaptureAborted so
+// the outer loop exits gracefully and the rest of extraction (dropdowns, main
+// render, quality gate) still runs.
+const isTabPhaseBudgetExceeded = (
+  config: ResolvedConfig,
+  state: ExtractorState,
+): boolean => {
+  if (state.tabPhaseStartMs == null) return false;
+  return Date.now() - state.tabPhaseStartMs > config.tabPhaseBudgetMs;
+};
+
 export const extractTabPanels = async (ctx: ExtractContext): Promise<void> => {
   const { config, state } = ctx;
   if (!config.extractTabs || !ctx.flags.allowClickTabs) return;
+  state.tabPhaseStartMs = Date.now();
   const gs = discoverTabGroups(ctx);
   annotateTabButtons(ctx, gs);
   ctx.progress('tabs', `discovered ${gs.length} tab group(s)`);
 
   for (const g of gs) {
+    if (state.tabCaptureAborted) break;
+    if (isTabPhaseBudgetExceeded(config, state)) {
+      state.tabCaptureAborted = true;
+      ctx.progress(
+        'tabs',
+        `cumulative tab phase budget exceeded (${config.tabPhaseBudgetMs}ms) — skipping remaining ${gs.length - gs.indexOf(g)} group(s)`,
+        'warn',
+      );
+      break;
+    }
     const root = findTabRoot(g);
     const activeIndex = getActiveButtonIndex(g.buttons);
     const activeButton = g.buttons[activeIndex];
-    let aborted = false;
 
     // ---------------------------------------------------------------------
     // PHASE 1: pre-capture the initially active tab. Clicking the active tab
@@ -517,7 +541,10 @@ export const extractTabPanels = async (ctx: ExtractContext): Promise<void> => {
 
       if (activeBid && activeLabel) {
         resetComputedStyleCache();
-        let captured = await captureCurrentTabPanel(ctx, activeButton, g, root, '', '');
+        let captured = await withHardTimeout(
+          captureCurrentTabPanel(ctx, activeButton, g, root, '', ''),
+          config.perTabHardTimeoutMs,
+        );
 
         if (!captured) {
           // Cycle-away-and-back: click a different tab, then click back.
@@ -533,11 +560,16 @@ export const extractTabPanels = async (ctx: ExtractContext): Promise<void> => {
               if (config.abortTabCaptureOnUrlDrift && isUrlDrifted(state)) {
                 const restored = await tryRestoreUrl(state);
                 if (!restored) {
-                  aborted = true;
+                  state.tabCaptureAborted = true;
+                  ctx.progress(
+                    'tabs',
+                    `URL drifted in Phase 1 (active tab "${activeLabel}") and history.back() failed — aborting all remaining tab groups`,
+                    'warn',
+                  );
                 }
               }
 
-              if (!aborted) {
+              if (!state.tabCaptureAborted) {
                 resetComputedStyleCache();
                 const textWhileAway = getVisibleText(root);
 
@@ -545,13 +577,16 @@ export const extractTabPanels = async (ctx: ExtractContext): Promise<void> => {
                 resetComputedStyleCache();
                 const textAfterReturn = getVisibleText(root);
 
-                captured = await captureCurrentTabPanel(
-                  ctx,
-                  activeButton,
-                  g,
-                  root,
-                  textWhileAway,
-                  textAfterReturn,
+                captured = await withHardTimeout(
+                  captureCurrentTabPanel(
+                    ctx,
+                    activeButton,
+                    g,
+                    root,
+                    textWhileAway,
+                    textAfterReturn,
+                  ),
+                  config.perTabHardTimeoutMs,
                 );
               }
             } catch (e) {
@@ -593,12 +628,22 @@ export const extractTabPanels = async (ctx: ExtractContext): Promise<void> => {
       }
     }
 
-    if (aborted) continue;
+    if (state.tabCaptureAborted) break;
 
     // ---------------------------------------------------------------------
     // PHASE 2: capture remaining (non-active) tabs via content-delta.
     // ---------------------------------------------------------------------
     for (const btn of g.buttons) {
+      if (state.tabCaptureAborted) break;
+      if (isTabPhaseBudgetExceeded(config, state)) {
+        state.tabCaptureAborted = true;
+        ctx.progress(
+          'tabs',
+          `cumulative tab phase budget exceeded mid-group (${config.tabPhaseBudgetMs}ms)`,
+          'warn',
+        );
+        break;
+      }
       const label = getButtonText(btn);
       const bid = btn.dataset.aiExporterButtonId;
       if (!bid || !label) continue;
@@ -615,7 +660,12 @@ export const extractTabPanels = async (ctx: ExtractContext): Promise<void> => {
         if (config.abortTabCaptureOnUrlDrift && isUrlDrifted(state)) {
           ctx.progress('tabs', `URL drifted after tab "${label}"`, 'warn');
           if (!(await tryRestoreUrl(state))) {
-            aborted = true;
+            state.tabCaptureAborted = true;
+            ctx.progress(
+              'tabs',
+              `history.back() failed after "${label}" — aborting all remaining tab groups`,
+              'warn',
+            );
             break;
           }
         }
@@ -623,8 +673,22 @@ export const extractTabPanels = async (ctx: ExtractContext): Promise<void> => {
         resetComputedStyleCache();
         const afterText = getVisibleText(root);
 
-        const cp = await captureCurrentTabPanel(ctx, btn, g, root, beforeText, afterText);
-        if (!cp) continue;
+        const cp = await withHardTimeout(
+          captureCurrentTabPanel(ctx, btn, g, root, beforeText, afterText),
+          config.perTabHardTimeoutMs,
+        );
+        if (!cp) {
+          if (isTabPhaseBudgetExceeded(config, state)) {
+            state.tabCaptureAborted = true;
+            ctx.progress(
+              'tabs',
+              `tab capture for "${label}" hit the ${config.perTabHardTimeoutMs}ms per-tab limit; overall budget also exhausted — aborting`,
+              'warn',
+            );
+            break;
+          }
+          continue;
+        }
 
         const pt = normalizeMarkdownPreserveCode(cp.text || (cp.lines ? cp.lines.join('\n') : ''));
         if (!pt) continue;
@@ -636,8 +700,8 @@ export const extractTabPanels = async (ctx: ExtractContext): Promise<void> => {
       }
     }
 
-    // Restore active tab at the end.
-    if (!aborted && activeButton) {
+    // Restore active tab at the end (skip if aborted — page has drifted).
+    if (!state.tabCaptureAborted && activeButton) {
       try {
         await clickAndWait(activeButton, root, config.tabClickWaitMs, config.tabSettleMs);
         resetComputedStyleCache();

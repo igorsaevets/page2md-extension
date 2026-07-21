@@ -61,6 +61,8 @@ export const DEFAULTS: ExtractorConfig = {
   skipCapturedTabPanelsInMainRender: true,
   abortTabCaptureOnUrlDrift: true,
   tabFallbackMaxBodyRatio: 0.5,
+  perTabHardTimeoutMs: 5000,
+  tabPhaseBudgetMs: 60000,
   dropdownClickWaitMs: 700,
   dropdownSettleMs: 120,
   maxDropdownButtons: 40,

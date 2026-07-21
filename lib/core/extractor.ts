@@ -29,7 +29,12 @@ import {
 import { convertMdxToMarkdown } from './mdx-processor';
 import { fetchOfficialMd } from './llms-txt';
 import { extractDropdownPanels, extractTabPanels } from './tab-handler';
-import { buildStructuredDataSection, extractInternalStateBlock } from './structured-data';
+import {
+  buildStructuredDataSection,
+  extractInternalStateBlock,
+  extractJsonLd,
+  extractOpenGraphAndTwitter,
+} from './structured-data';
 import {
   buildNoscriptFallback,
   buildQualityMetricsBlock,
@@ -73,6 +78,8 @@ export const createExtractorState = (): ExtractorState => ({
   originalScrollPosition: null,
   baselineBodyText: '',
   initialUrl: location.href,
+  tabCaptureAborted: false,
+  tabPhaseStartMs: null,
 });
 
 // --- Details expand / restore (Section 25) ---
@@ -197,34 +204,162 @@ export const cleanupExporterAttributes = (ctx: ExtractContext): void => {
 
 // --- Frontmatter (Section 38) ---
 
+// Escape a YAML double-quoted scalar. Matches the historical rule of this
+// codebase: escape only `"` — control characters and `\` are passed through
+// unchanged so parsers that treat the value as JSON-string will still fail on
+// truly weird inputs, but callers normalise via cleanInline() first.
+const yq = (s: string): string => '"' + String(s).replace(/"/g, '\\"') + '"';
+
+// Depth-limited scan of the JSON-LD graph for a scalar/name/url on a matching
+// key. Handles Person objects (author.name), arrays (creator[0].name), and
+// nested @graph structures. Stops at the first non-empty match.
+const findJsonLdField = (jl: unknown[], keys: readonly string[]): string => {
+  const asName = (v: unknown): string => {
+    if (typeof v === 'string') return v.trim();
+    if (v && typeof v === 'object' && !Array.isArray(v)) {
+      const rec = v as Record<string, unknown>;
+      const name = rec.name || rec['@id'] || rec.url;
+      if (typeof name === 'string') return name.trim();
+    }
+    if (Array.isArray(v) && v.length) return asName(v[0]);
+    return '';
+  };
+  for (const item of jl) {
+    if (!item || typeof item !== 'object') continue;
+    const obj = item as Record<string, unknown>;
+    for (const k of keys) {
+      const val = asName(obj[k]);
+      if (val) return val;
+    }
+  }
+  return '';
+};
+
+const collectArticleTags = (): string[] => {
+  const tags: string[] = [];
+  document.querySelectorAll('meta[property="article:tag"]').forEach((m) => {
+    const c = cleanInline(m.getAttribute('content') || '');
+    if (c && !tags.includes(c)) tags.push(c);
+  });
+  return tags;
+};
+
 export const buildFrontmatter = (
   ctx: ExtractContext,
   extras: Record<string, string | number> = {},
 ): string[] => {
   const { config, state } = ctx;
+  const title = cleanInline(document.title);
+  const description = getMeta('meta[name="description"]');
+  const canonical = absUrl(
+    document.querySelector('link[rel="canonical"]')?.getAttribute('href') || '',
+  );
   const fm = [
     '---',
-    `title: "${cleanInline(document.title).replace(/"/g, '\\"')}"`,
-    `source: "${location.href}"`,
-    `captured_at: "${new Date().toISOString()}"`,
-    `language: "${document.documentElement.lang || 'unknown'}"`,
-    `description: "${getMeta('meta[name="description"]').replace(/"/g, '\\"')}"`,
-    `canonical: "${absUrl(document.querySelector('link[rel="canonical"]')?.getAttribute('href') || '').replace(/"/g, '\\"')}"`,
+    `title: ${yq(title)}`,
+    `source: ${yq(location.href)}`,
+    `captured_at: ${yq(new Date().toISOString())}`,
+    `language: ${yq(document.documentElement.lang || 'unknown')}`,
+    `description: ${yq(description)}`,
+    `canonical: ${yq(canonical)}`,
   ];
+
+  // Enriched metadata: OG / Twitter / article:* / <meta name=author|keywords>
+  // / JSON-LD. All keys are emitted when found (per user decision — no verbose
+  // flag). Deduped against existing YAML keys and against each other to keep
+  // the block compact for typical pages.
+  const { og, twitter, article } = extractOpenGraphAndTwitter();
+  const jl = extractJsonLd();
+  const emittedValues: Record<string, string> = {
+    title: cleanInline(title),
+    description: cleanInline(description),
+  };
+  const push = (key: string, rawVal: string): void => {
+    if (!rawVal) return;
+    const val = cleanInline(rawVal);
+    if (!val) return;
+    if (emittedValues[key] === val) return;
+    fm.push(`${key}: ${yq(val)}`);
+    emittedValues[key] = val;
+  };
+
+  // OpenGraph — skip og_title/og_description when equal to the plain title/description.
+  const ogTitle = og['og:title'] || '';
+  if (cleanInline(ogTitle) && cleanInline(ogTitle) !== emittedValues.title) {
+    push('og_title', ogTitle);
+  }
+  const ogDesc = og['og:description'] || '';
+  if (cleanInline(ogDesc) && cleanInline(ogDesc) !== emittedValues.description) {
+    push('og_description', ogDesc);
+  }
+  push('og_image', og['og:image'] || '');
+  push('og_type', og['og:type'] || '');
+  push('og_site_name', og['og:site_name'] || '');
+  push('og_locale', og['og:locale'] || '');
+
+  // Twitter — dedup vs OG and vs plain fields.
+  const twCard = twitter['twitter:card'] || '';
+  push('twitter_card', twCard);
+  const twTitle = twitter['twitter:title'] || '';
+  if (
+    cleanInline(twTitle) &&
+    cleanInline(twTitle) !== emittedValues.title &&
+    cleanInline(twTitle) !== emittedValues.og_title
+  ) {
+    push('twitter_title', twTitle);
+  }
+  const twDesc = twitter['twitter:description'] || '';
+  if (
+    cleanInline(twDesc) &&
+    cleanInline(twDesc) !== emittedValues.description &&
+    cleanInline(twDesc) !== emittedValues.og_description
+  ) {
+    push('twitter_description', twDesc);
+  }
+  const twImage = twitter['twitter:image'] || '';
+  if (cleanInline(twImage) && cleanInline(twImage) !== emittedValues.og_image) {
+    push('twitter_image', twImage);
+  }
+
+  // Article dates & author — fall back through article:* → <meta> → JSON-LD.
+  push(
+    'published',
+    article['article:published_time'] || findJsonLdField(jl, ['datePublished', 'dateCreated']),
+  );
+  push(
+    'modified',
+    article['article:modified_time'] || findJsonLdField(jl, ['dateModified']),
+  );
+  const metaAuthor = getMeta('meta[name="author"]');
+  push(
+    'author',
+    article['article:author'] ||
+      metaAuthor ||
+      findJsonLdField(jl, ['author', 'creator', 'publisher']),
+  );
+  push('section', article['article:section'] || '');
+  push('keywords', getMeta('meta[name="keywords"]'));
+
+  // article:tag repeats — collect into a YAML flow-sequence, e.g. tags: ["a","b"].
+  const tags = collectArticleTags();
+  if (tags.length) {
+    fm.push(`tags: [${tags.map((t) => yq(t)).join(', ')}]`);
+  }
+
   if (config.outputMode === 'debug') {
     fm.push(
-      `extractor: "${EXTRACTOR_NAME}"`,
-      `revision: "${EXTRACTOR_REVISION}"`,
-      `profile: "${config.activeProfile}"`,
-      `interaction_mode: "${config.interactionMode}"`,
-      `lazy_load_mode: "${config.lazyLoadMode}"`,
-      `tab_panel_strategy: "${config.tabPanelStrategy}"`,
-      `visual_markers_mode: "${config.visualMarkersMode}"`,
-      `tab_panels_captured: "${state.tabPanelsByButtonId.size}"`,
-      `dropdown_panels_captured: "${state.dropdownPanelsByButtonId.size}"`,
+      `extractor: ${yq(EXTRACTOR_NAME)}`,
+      `revision: ${yq(EXTRACTOR_REVISION)}`,
+      `profile: ${yq(config.activeProfile)}`,
+      `interaction_mode: ${yq(config.interactionMode)}`,
+      `lazy_load_mode: ${yq(config.lazyLoadMode)}`,
+      `tab_panel_strategy: ${yq(config.tabPanelStrategy)}`,
+      `visual_markers_mode: ${yq(config.visualMarkersMode)}`,
+      `tab_panels_captured: ${yq(String(state.tabPanelsByButtonId.size))}`,
+      `dropdown_panels_captured: ${yq(String(state.dropdownPanelsByButtonId.size))}`,
     );
   }
-  Object.entries(extras).forEach(([k, v]) => fm.push(`${k}: "${String(v).replace(/"/g, '\\"')}"`));
+  Object.entries(extras).forEach(([k, v]) => fm.push(`${k}: ${yq(String(v))}`));
   fm.push('---', '');
   return fm;
 };

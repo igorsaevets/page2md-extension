@@ -70,6 +70,15 @@ export interface ExtractorConfig {
   skipCapturedTabPanelsInMainRender: boolean;
   abortTabCaptureOnUrlDrift: boolean;
   tabFallbackMaxBodyRatio: number;
+  // Hard wall-clock cap on a single tab click+capture (defense in depth against
+  // future async hangs — clickAndWait is already bounded by waitForDomToSettle's
+  // tMs, so today's synchronous renderNode is not stopped by this timeout).
+  perTabHardTimeoutMs: number;
+  // Cumulative budget across ALL tab groups in one extraction. When exceeded,
+  // remaining groups are skipped (state.tabCaptureAborted becomes sticky). This
+  // is the real protection against pages with dozens of tab groups where the
+  // per-click cost is small but the total wall time blows past 60 s.
+  tabPhaseBudgetMs: number;
   dropdownClickWaitMs: number;
   dropdownSettleMs: number;
   maxDropdownButtons: number;
@@ -225,6 +234,14 @@ export interface ExtractorState {
   originalScrollPosition: { x: number; y: number } | null;
   baselineBodyText: string;
   initialUrl: string;
+  // Set to true when tab capture must halt for the WHOLE page — e.g. URL drift
+  // after a tab click that history.back() cannot restore. Local `aborted` flags
+  // were only skipping the inner button loop, leaving remaining tab groups to
+  // hang on the same navigated page (session #8 field-test bug).
+  tabCaptureAborted: boolean;
+  // Wall-clock timestamp when extractTabPanels() started, used for the
+  // cumulative phase budget (config.tabPhaseBudgetMs). Null before Phase runs.
+  tabPhaseStartMs: number | null;
 }
 
 // Everything a render/capture function needs, replacing the prototype's closures.
