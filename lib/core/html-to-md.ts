@@ -89,13 +89,17 @@ export const isBadge = (ctx: ExtractContext, el: Element): boolean => {
   if (el.tagName !== 'SPAN' && el.tagName !== 'DIV') return false;
   const cls = el.className;
   if (typeof cls !== 'string' || !ctx.config.badgeClassPattern.test(cls)) return false;
-  const t = cleanInline((el as HTMLElement).innerText || el.textContent || '');
+  const t = cleanInline(el.textContent || '');
   return Boolean(t && t.length <= ctx.config.maxBadgeTextLength);
 };
 
 // --- Inline rendering (Section 27) ---
 
-export const renderInlineChildren = (ctx: ExtractContext, el: Element): string => {
+export const renderInlineChildren = (
+  ctx: ExtractContext,
+  el: Element,
+  skipTags?: Set<string>,
+): string => {
   const { config } = ctx;
   const parts: string[] = [];
   for (const child of el.childNodes) {
@@ -106,6 +110,7 @@ export const renderInlineChildren = (ctx: ExtractContext, el: Element): string =
     }
     if (child.nodeType !== Node.ELEMENT_NODE) continue;
     const c = child as HTMLElement;
+    if (skipTags && skipTags.has(c.tagName)) continue;
     if (isSkippable(c, config)) continue;
     if (!config.includeHiddenMeaningfulText && !isContentVisible(c)) continue;
     const tag = c.tagName;
@@ -204,7 +209,7 @@ export const renderInlineChildren = (ctx: ExtractContext, el: Element): string =
       continue;
     }
     if (isBadge(ctx, c)) {
-      const t = cleanInline(c.innerText || c.textContent || '');
+      const t = cleanInline(c.textContent || '');
       if (t) parts.push(`[Badge: ${esc(ctx, t)}]`);
       continue;
     }
@@ -226,17 +231,18 @@ export const renderInlineChildren = (ctx: ExtractContext, el: Element): string =
       if (t) parts.push(t);
       continue;
     }
-    const t = cleanInline(c.innerText || c.textContent);
+    const t = cleanInline(c.textContent || '');
     if (t) parts.push(t);
   }
   return cleanInline(parts.join(' ')).replace(/\s+\n\s+/g, '\n');
 };
 
-export const renderLiInlineText = (ctx: ExtractContext, li: Element): string => {
-  const cl = li.cloneNode(true) as Element;
-  cl.querySelectorAll('ul, ol, dl, table, blockquote, details, figure, pre').forEach((n) => n.remove());
-  return renderInlineChildren(ctx, cl);
-};
+const LI_BLOCK_SKIP = new Set([
+  'UL', 'OL', 'DL', 'TABLE', 'BLOCKQUOTE', 'DETAILS', 'FIGURE', 'PRE', 'HR',
+]);
+
+export const renderLiInlineText = (ctx: ExtractContext, li: Element): string =>
+  renderInlineChildren(ctx, li, LI_BLOCK_SKIP);
 
 // --- Form rendering (Section 28) ---
 
@@ -317,9 +323,13 @@ export const renderTable = (table: HTMLTableElement, depth: number): string[] =>
   }
   const rd = ar
     .map((tr) =>
-      [...tr.querySelectorAll<HTMLElement>(':scope > th, :scope > td')].map((c) =>
-        escapeMdTableCell(c.innerText || c.textContent || ''),
-      ),
+      [...tr.querySelectorAll<HTMLElement>(':scope > th, :scope > td')].flatMap((c) => {
+        const text = escapeMdTableCell(c.innerText || c.textContent || '');
+        const cs = Math.min(parseInt(c.getAttribute('colspan') || '1', 10) || 1, 20);
+        const cells = [text];
+        for (let i = 1; i < cs; i++) cells.push('');
+        return cells;
+      }),
     )
     .filter((r) => r.length);
   if (!rd.length) return lines;
@@ -807,7 +817,7 @@ export const renderNode = (
     return lines;
   }
   if (isBadge(ctx, el)) {
-    const t = cleanInline(el.innerText || el.textContent || '');
+    const t = cleanInline(el.textContent || '');
     if (t) lines.push(`${pfx}[Badge: ${esc(ctx, t)}]`);
     return lines;
   }
@@ -956,17 +966,19 @@ export const renderNode = (
       );
     }
   } else if (tag === 'BLOCKQUOTE') {
-    const t = cleanBlock(el.innerText || el.textContent);
-    if (t) {
+    const inner: string[] = [];
+    for (const c of el.childNodes) inner.push(...renderNode(ctx, c, depth, opts));
+    const joined = inner.join('\n');
+    if (joined.trim()) {
       lines.push('');
-      t.split('\n').forEach((l) => lines.push(`> ${cleanInline(l)}`));
+      joined.split('\n').forEach((l) => lines.push(`> ${l}`));
       lines.push('');
     }
   } else if (tag === 'DETAILS') {
     const se = el.querySelector(':scope > summary') || el.querySelector('summary');
     const st = se
       ? renderInlineChildren(ctx, se) ||
-        cleanInline((se as HTMLElement).innerText || se.textContent || 'Expandable details')
+        cleanInline(se.textContent || 'Expandable details')
       : 'Expandable details';
     lines.push('', `<!-- AI: DETAILS START: ${st} -->`, `**Details:** ${st}`, '');
     for (const c of el.childNodes) {

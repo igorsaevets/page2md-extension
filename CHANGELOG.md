@@ -4,6 +4,29 @@ All notable changes to Page2AI are documented here.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] — 2026-07-23
+
+### Added
+
+- **Table colspan support.** Cells with `colspan="N"` are expanded into N cells in Markdown output (content + empty padding cells), fixing misaligned tables on pages with merged header cells (common in API pricing tables, model comparison charts). Capped at 20 to prevent abuse.
+
+### Fixed
+
+- **Blockquotes now preserve rich formatting.** Previously, blockquotes were flattened to plain text via `innerText`, losing bold, links, inline code, and nested structure. Now rendered recursively — `> **Note:** see [link](url)` is preserved instead of becoming `> Note: see link`.
+
+### Performance
+
+- **`renderLiInlineText` no longer clones the DOM subtree.** Replaced `cloneNode(true)` + `querySelectorAll().forEach(remove)` with a `skipTags` parameter to `renderInlineChildren` — avoids creating and immediately discarding a full DOM clone for every `<li>`. On pages with hundreds of list items (API reference docs, changelogs), this measurably reduces GC pressure.
+- **`innerText` replaced with `textContent` in hot paths.** Table cells, badges, inline text fallback, and detail summaries no longer trigger synchronous layout reflow. `textContent` is O(n) DOM traversal vs `innerText`'s forced layout computation. On pages with large tables (100+ cells), extraction is noticeably faster.
+
+### Internal
+
+- `renderInlineChildren` gains optional `skipTags?: Set<string>` parameter.
+- `LI_BLOCK_SKIP` constant: set of 8 block-level tags skipped during LI inline rendering.
+- e2e smoke tests extended to 36 checks (+2: blockquote rich formatting, table colspan expansion).
+
+[1.2.0]: https://github.com/igorsaevets/page2ai-extension/releases/tag/v1.2.0
+
 ## [1.1.0] — 2026-07-22
 
 ### Added

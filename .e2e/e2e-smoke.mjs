@@ -94,8 +94,16 @@ console.log(md.length);</code></pre>
     <p>DETAILS-HIDDEN-CONTENT lives behind a closed details element.</p>
   </details>
 
-  <blockquote>Markdown is the lingua franca of LLMs.</blockquote>
+  <blockquote><p><strong>Note:</strong> Markdown is the <a href="https://example.com/lingua">lingua franca</a> of LLMs.</p></blockquote>
   <ul><li>First point</li><li>Second point<ul><li>Nested point</li></ul></li></ul>
+
+  <h2>Pricing</h2>
+  <table>
+    <thead><tr><th>Model</th><th colspan="2">Cost per MTok</th><th>Context</th></tr></thead>
+    <tbody>
+      <tr><td>Spark 1.1</td><td>$1.25</td><td>$4.25</td><td>1M</td></tr>
+    </tbody>
+  </table>
 </main>
 <footer><a href="/docs/about">About</a></footer>
 <script>
@@ -237,7 +245,12 @@ try {
   check('hidden tab panel captured via click', md.includes('PNPM-SECRET-MARKER'));
   check('closed details content captured', md.includes('DETAILS-HIDDEN-CONTENT'));
   check('nested list rendered', md.includes('- Nested point'));
-  check('blockquote rendered', md.includes('> Markdown is the lingua franca'));
+  check('blockquote preserves bold', md.includes('> ') && md.includes('**Note:**'));
+  check('blockquote preserves link', md.includes('](https://example.com/lingua)'));
+  check('table colspan expanded', (() => {
+    const headerLine = md.split('\n').find(l => /\|\s*Model\s*\|/.test(l));
+    return headerLine ? (headerLine.match(/\|/g) || []).length >= 5 : false;
+  })());
   check('quality report present', Boolean(result.quality?.ratioStatus), result.quality?.ratioStatus);
   check('tabs captured count > 0', (result.tabsCaptured ?? 0) > 0, `tabsCaptured=${result.tabsCaptured}`);
 
